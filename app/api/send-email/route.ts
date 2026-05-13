@@ -13,9 +13,17 @@ export const runtime = 'nodejs';
 const rateLimitStore = new Map<string, { count: number; reset: number }>();
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 5;
+const RATE_LIMIT_MAX_ENTRIES = 10_000;
+
+function pruneExpired(now: number) {
+  for (const [key, value] of rateLimitStore) {
+    if (now > value.reset) rateLimitStore.delete(key);
+  }
+}
 
 function checkRateLimit(userId: string): { allowed: boolean; remaining: number; reset: number } {
   const now = Date.now();
+  if (rateLimitStore.size > RATE_LIMIT_MAX_ENTRIES) pruneExpired(now);
   let data = rateLimitStore.get(userId);
 
   if (!data || now > data.reset) {
@@ -62,8 +70,9 @@ export async function POST(request: NextRequest) {
 
   try {
     // 1. Authentication Verification
-    const authHeader = request.headers.get('authorization');
-    const token = authHeader?.replace('Bearer ', '');
+    const authHeader = request.headers.get('authorization') ?? '';
+    const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+    const token = match?.[1]?.trim();
 
     let supabase;
     if (token) {
@@ -92,26 +101,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Rate Limiting Check
-    const rateLimitResult = checkRateLimit(user.id);
-    if (!rateLimitResult.allowed) {
-      logSecurityEvent('RATE_LIMIT_EXCEEDED_EMAIL', { userId: user.id, ip }, ip);
-      return new Response(
-        JSON.stringify({ 
-          error: 'Rate limit exceeded. Maximum 5 emails allowed per 15 minutes.',
-          retryAfter: Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
-        }),
-        { 
-          status: 429,
-          headers: {
-            'Content-Type': 'application/json',
-            'Retry-After': Math.ceil((rateLimitResult.reset - Date.now()) / 1000).toString(),
-          }
-        }
-      );
-    }
-
-    // 3. Request Body Parsing & Validation
+    // 2. Request Body Parsing & Validation (Run before rate limit so malformed requests don't consume quota)
     let rawBody;
     try {
       rawBody = await request.json();
@@ -133,6 +123,25 @@ export async function POST(request: NextRequest) {
 
     const { to, subject, content, fromName, fromEmail, letterContent } = validationResult.data;
 
+    // 3. Rate Limiting Check
+    const rateLimitResult = checkRateLimit(user.id);
+    if (!rateLimitResult.allowed) {
+      logSecurityEvent('RATE_LIMIT_EXCEEDED_EMAIL', { userId: user.id, ip }, ip);
+      return new Response(
+        JSON.stringify({ 
+          error: 'Rate limit exceeded. Maximum 5 emails allowed per 15 minutes.',
+          retryAfter: Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
+        }),
+        { 
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': Math.ceil((rateLimitResult.reset - Date.now()) / 1000).toString(),
+          }
+        }
+      );
+    }
+
     // Sanitize string contents to prevent XSS/injection attacks inside HTML email rendering
     const sanitizedFromName = fromName ? sanitizeInput(fromName) : '';
     const sanitizedFromEmail = fromEmail ? sanitizeInput(fromEmail) : '';
@@ -153,18 +162,24 @@ export async function POST(request: NextRequest) {
       content: letterContent.content ? sanitizeHtml(letterContent.content) : '',
     };
 
-    // Create a test SMTP transporter using Ethereal
-    // For testing purposes, we'll create a test account
-    const testAccount = await nodemailer.createTestAccount();
+    // Create reusable transporter object safely avoiding unnecessary network calls
+    let smtpUser = process.env.EMAIL_USER;
+    let smtpPass = process.env.EMAIL_PASS;
 
-    // Create reusable transporter object using the test account
+    // Only fetch Ethereal test account if production credentials are not provided
+    if (!process.env.EMAIL_HOST || !smtpUser || !smtpPass) {
+      const testAccount = await nodemailer.createTestAccount();
+      if (!smtpUser) smtpUser = testAccount.user;
+      if (!smtpPass) smtpPass = testAccount.pass;
+    }
+
     const transporter = nodemailer.createTransport({
       host: process.env.EMAIL_HOST || 'smtp.ethereal.email',
       port: parseInt(process.env.EMAIL_PORT || '587'),
       secure: false, // true for 465, false for other ports
       auth: {
-        user: process.env.EMAIL_USER || testAccount.user,
-        pass: process.env.EMAIL_PASS || testAccount.pass,
+        user: smtpUser,
+        pass: smtpPass,
       },
     });
 
@@ -201,9 +216,12 @@ export async function POST(request: NextRequest) {
         <p>${sanitizedPersonalMessage}</p>
       </div>` : '';
 
-    // Send email
+    // Send email using structured address object form
     const info = await transporter.sendMail({
-      from: `"${sanitizedFromName}" <${sanitizedFromEmail || process.env.EMAIL_FROM || 'noreply@draftdeckai.com'}>`,
+      from: {
+        name: sanitizedFromName || '',
+        address: sanitizedFromEmail || process.env.EMAIL_FROM || 'noreply@draftdeckai.com',
+      },
       to,
       subject: sanitizedSubject,
       html: `${formattedContent}${personalMessageHtml}`,
