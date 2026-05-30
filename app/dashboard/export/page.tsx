@@ -127,8 +127,8 @@ export default function ExportPage() {
 
       // Count resumes vs generated documents
       const allDocuments = documentsResult.data || [];
-      const resumeCount = allDocuments.filter((d: any) => d.type === "resume").length;
-      const generatedCount = allDocuments.filter((d: any) => d.type === "generated").length;
+      const resumeCount = allDocuments.filter((d: { type: string }) => d.type === "resume").length;
+      const generatedCount = allDocuments.filter((d: { type: string }) => d.type === "generated").length;
 
       const totalStats: ExportStats = {
         resumes: resumeCount,

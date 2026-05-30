@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Download, Loader2, FileJson } from "lucide-react";
+import { Loader2, FileJson } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface ExportButtonProps {
@@ -66,11 +66,11 @@ export function ExportButton({
         title: "Export successful!",
         description: "Your data has been downloaded as a JSON file",
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Export error:", error);
       toast({
         title: "Export failed",
-        description: error.message || "Failed to export your data. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to export your data. Please try again.",
         variant: "destructive",
       });
     } finally {

@@ -20,15 +20,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Fetch all user data once — shared between compressed and plain response paths
+    const filename = generateExportFilename(user.id);
+    const userData = await fetchAllUserData(user.id);
+
     // Check if client supports compression via Accept-Encoding header
     const acceptEncoding = request.headers.get('accept-encoding') || '';
     const supportsGzip = acceptEncoding.includes('gzip');
 
-    const filename = generateExportFilename(user.id);
-
     if (supportsGzip) {
       // Use compression for large datasets
-      const userData = await fetchAllUserData(user.id);
       const compressedBlob = await compressData(userData);
 
       return new NextResponse(compressedBlob, {
@@ -36,13 +37,12 @@ export async function GET(request: NextRequest) {
         headers: {
           "Content-Type": "application/json",
           "Content-Encoding": "gzip",
-          "Content-Disposition": `attachment; filename="${filename}.gz"`,
+          "Content-Disposition": `attachment; filename="${filename}"`,
           "Cache-Control": "no-cache, no-store, must-revalidate",
         },
       });
     } else {
       // Fallback to non-compressed blob for clients that don't support gzip
-      const userData = await fetchAllUserData(user.id);
       const blob = generateExportFile(userData);
 
       return new NextResponse(blob, {

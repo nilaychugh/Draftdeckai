@@ -14,7 +14,56 @@ export interface ExportableItem {
   description?: string;
   created_at: string;
   updated_at: string;
-  content: any;
+  content: Record<string, unknown>;
+}
+
+interface RawDocument {
+  id: string;
+  type: string;
+  title?: string;
+  content?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  document_type?: string;
+}
+
+interface RawPresentation {
+  id: string;
+  title?: string;
+  content?: Record<string, unknown>;
+  slides?: unknown[];
+  themeId?: string;
+  template?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RawDiagram {
+  id: string;
+  title?: string;
+  type?: string;
+  mermaid_code?: string;
+  mermaidCode?: string;
+  data?: Record<string, unknown>;
+  content?: Record<string, unknown>;
+  settings?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RawLetter {
+  id: string;
+  subject?: string;
+  title?: string;
+  letter_type?: string;
+  content?: Record<string, unknown>;
+  from?: Record<string, unknown>;
+  to?: Record<string, unknown>;
+  date?: string;
+  body?: string;
+  signature?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface UserDataExport {
@@ -95,12 +144,18 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
       .order("created_at", { ascending: false }),
   ]);
 
+  // Handle Supabase query errors
+  if (documentsResult.error) throw new Error(`Failed to fetch documents: ${documentsResult.error.message}`);
+  if (presentationsResult.error) throw new Error(`Failed to fetch presentations: ${presentationsResult.error.message}`);
+  if (diagramsResult.error) throw new Error(`Failed to fetch diagrams: ${diagramsResult.error.message}`);
+  if (lettersResult.error) throw new Error(`Failed to fetch letters: ${lettersResult.error.message}`);
+
   // Process documents - separate resumes from generated documents
-  const allDocuments = documentsResult.data || [];
+  const allDocuments: RawDocument[] = documentsResult.data || [];
   const resumes: ExportableItem[] = [];
   const generatedDocs: ExportableItem[] = [];
 
-  allDocuments.forEach((doc: any) => {
+  allDocuments.forEach((doc: RawDocument) => {
     const item: ExportableItem = {
       id: doc.id,
       type: doc.type as ContentType,
@@ -120,9 +175,9 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
   });
 
   // Process presentations
-  const presentations: ExportableItem[] = (presentationsResult.data || []).map((pres: any) => {
-    const content = pres.content || pres || {};
-    const slides = content.slides || pres.slides || [];
+  const presentations: ExportableItem[] = (presentationsResult.data as RawPresentation[] || []).map((pres: RawPresentation) => {
+    const content = pres.content || {};
+    const slides = (content.slides as unknown[]) || pres.slides || [];
     
     return {
       id: pres.id,
@@ -134,14 +189,14 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
       content: {
         title: pres.title,
         slides: slides,
-        theme_id: content.themeId || content.template || pres.themeId || pres.template || "peach",
-        settings: content.settings || {},
+        theme_id: (content.themeId || content.template || pres.themeId || pres.template || "peach") as string,
+        settings: (content.settings || {}) as Record<string, unknown>,
       },
     };
   });
 
   // Process diagrams
-  const diagrams: ExportableItem[] = (diagramsResult.data || []).map((diagram: any) => ({
+  const diagrams: ExportableItem[] = (diagramsResult.data as RawDiagram[] || []).map((diagram: RawDiagram) => ({
     id: diagram.id,
     type: "diagram",
     title: diagram.title || "Untitled Diagram",
@@ -157,8 +212,8 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
   }));
 
   // Process letters
-  const letters: ExportableItem[] = (lettersResult.data || []).map((letter: any) => {
-    const content = letter.content || letter || {};
+  const letters: ExportableItem[] = (lettersResult.data as RawLetter[] || []).map((letter: RawLetter) => {
+    const content = letter.content || {};
     
     return {
       id: letter.id,
@@ -209,19 +264,20 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
 /**
  * Helper function to get document description
  */
-function getDocumentDescription(doc: any): string {
+function getDocumentDescription(doc: RawDocument): string {
   const content = doc.content || {};
   
   switch (doc.type) {
-    case "resume":
-      return content.resumeData?.personal_info?.name || 
-             content.resumeData?.personalInfo?.name || 
-             content.personal_info?.name || 
-             content.personalInfo?.name || 
-             "Resume";
-    case "generated":
-      const sections = content.metadata?.sections || content.sections || [];
+    case "resume": {
+      const resumeData = content.resumeData as Record<string, unknown> | undefined;
+      const personalInfo = (resumeData?.personal_info || resumeData?.personalInfo || content.personal_info || content.personalInfo) as Record<string, unknown> | undefined;
+      return (personalInfo?.name as string) || "Resume";
+    }
+    case "generated": {
+      const metadata = content.metadata as Record<string, unknown> | undefined;
+      const sections = (metadata?.sections || content.sections || []) as unknown[];
       return `${sections.length || 0} sections • ${doc.document_type?.replace(/-/g, " ") || "AI Document"}`;
+    }
     default:
       return doc.type || "Document";
   }
@@ -236,49 +292,30 @@ export function generateExportFile(data: UserDataExport): Blob {
 }
 
 /**
- * Streams user data export as a readable stream for large datasets
- * This avoids loading the entire JSON into memory at once
- */
-export async function streamUserDataExport(
-  userId: string,
-  stream: WritableStream<Uint8Array>
-): Promise<void> {
-  const writer = stream.getWriter();
-  const encoder = new TextEncoder();
-
-  try {
-    const userData = await fetchAllUserData(userId);
-    const jsonString = JSON.stringify(userData, null, 2);
-    
-    // Stream the JSON in chunks to avoid memory issues
-    const chunkSize = 64 * 1024; // 64KB chunks
-    for (let i = 0; i < jsonString.length; i += chunkSize) {
-      const chunk = jsonString.slice(i, i + chunkSize);
-      await writer.write(encoder.encode(chunk));
-    }
-  } finally {
-    await writer.close();
-  }
-}
-
-/**
- * Compresses data using gzip compression
- * Returns a compressed blob
+ * Compresses data using gzip compression.
+ * Falls back to uncompressed if CompressionStream is unavailable (e.g. Edge runtime or
+ * older Node.js versions that do not ship the Compression Streams API).
+ * Returns a compressed blob.
  */
 export async function compressData(data: UserDataExport): Promise<Blob> {
   const jsonString = JSON.stringify(data, null, 2);
   const encoder = new TextEncoder();
   const uint8Array = encoder.encode(jsonString);
-  
+
+  // Guard: CompressionStream is not available in all runtimes (e.g. Next.js Edge)
+  if (typeof CompressionStream === 'undefined') {
+    return new Blob([uint8Array], { type: 'application/json' });
+  }
+
   // Use CompressionStream API for gzip compression
   const compressionStream = new CompressionStream('gzip');
   const writer = compressionStream.writable.getWriter();
   const reader = compressionStream.readable.getReader();
-  
+
   // Write data to compression stream
   writer.write(uint8Array);
   writer.close();
-  
+
   // Collect compressed chunks
   const chunks: BlobPart[] = [];
   while (true) {
@@ -286,49 +323,9 @@ export async function compressData(data: UserDataExport): Promise<Blob> {
     if (done) break;
     chunks.push(value);
   }
-  
+
   // Combine chunks into a single blob
   return new Blob(chunks, { type: 'application/gzip' });
-}
-
-/**
- * Streams and compresses user data export for large datasets
- * This is the most efficient method for handling large exports
- */
-export async function streamCompressedExport(
-  userId: string,
-  stream: WritableStream<Uint8Array>
-): Promise<void> {
-  const writer = stream.getWriter();
-  const encoder = new TextEncoder();
-
-  try {
-    const userData = await fetchAllUserData(userId);
-    const jsonString = JSON.stringify(userData, null, 2);
-    const uint8Array = encoder.encode(jsonString);
-    
-    // Create compression stream
-    const compressionStream = new CompressionStream('gzip');
-    const compressionWriter = compressionStream.writable.getWriter();
-    const compressionReader = compressionStream.readable.getReader();
-    
-    // Start compression in background
-    const compressionPromise = (async () => {
-      await compressionWriter.write(uint8Array);
-      await compressionWriter.close();
-    })();
-    
-    // Stream compressed chunks to output
-    while (true) {
-      const { done, value } = await compressionReader.read();
-      if (done) break;
-      await writer.write(value);
-    }
-    
-    await compressionPromise;
-  } finally {
-    await writer.close();
-  }
 }
 
 /**
