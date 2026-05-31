@@ -66,6 +66,9 @@ export function ExportButton({
         title: "Export successful!",
         description: "Your data has been downloaded as a JSON file",
       });
+
+      // Notify parent only on success
+      onExportComplete?.();
     } catch (error: unknown) {
       console.error("Export error:", error);
       toast({
@@ -75,7 +78,6 @@ export function ExportButton({
       });
     } finally {
       setIsExporting(false);
-      onExportComplete?.();
     }
   };
 

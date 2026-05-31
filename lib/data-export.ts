@@ -219,7 +219,7 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
       id: letter.id,
       type: "letter",
       title: letter.subject || letter.title || "Untitled Letter",
-      description: letter.letter_type || content.letter_type || "Letter",
+      description: letter.letter_type || (content.letter_type as string | undefined) || "Letter",
       created_at: letter.created_at,
       updated_at: letter.updated_at,
       content: {
@@ -228,7 +228,7 @@ export async function fetchAllUserData(userId: string): Promise<UserDataExport> 
         from: content.from || letter.from || {},
         to: content.to || letter.to || {},
         date: content.date || letter.date,
-        body: content.content || content.body || letter.content || letter.body,
+        body: content.content || content.body || letter.body,
         signature: content.signature || letter.signature,
       },
     };
@@ -313,8 +313,8 @@ export async function compressData(data: UserDataExport): Promise<Blob> {
   const reader = compressionStream.readable.getReader();
 
   // Write data to compression stream
-  writer.write(uint8Array);
-  writer.close();
+  await writer.write(uint8Array);
+  await writer.close();
 
   // Collect compressed chunks
   const chunks: BlobPart[] = [];
